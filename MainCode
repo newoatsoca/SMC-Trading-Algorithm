@@ -1,0 +1,370 @@
+from alpaca.data.historical import CryptoHistoricalDataClient
+from alpaca.trading.client import TradingClient
+import pandas as pd
+import time
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+from alpaca.data.requests import CryptoBarsRequest
+from datetime import datetime, timedelta, timezone
+from pytz import timezone
+
+
+# Replace with your Alpaca info
+API_KEY = "Your-Api-Key"
+SECRET_KEY = "Your-Secret-Key"
+
+# Initialize clients
+data_client = CryptoHistoricalDataClient(API_KEY, SECRET_KEY)
+
+# Create a variable for the symbol
+SYMBOL = 'BTC/USD'
+
+
+def get_candle_data(symbol, timeframe=TimeFrame(5, TimeFrameUnit.Minute)):
+    # Define timezones
+    utc = timezone('UTC')
+
+    # Get current UTC time before the last 5 minutes
+    end_time = datetime.now(utc) - timedelta(minutes=5)
+    start_time = end_time - timedelta(minutes=110) #2-hour time span of candle data
+
+
+    request = CryptoBarsRequest(
+        symbol_or_symbols=symbol,
+        timeframe=timeframe,
+        start=start_time,
+        end=end_time
+    )
+
+    bars = data_client.get_crypto_bars(request)
+    return bars.df
+
+def findTrend():
+    data = get_candle_data(SYMBOL, timeframe=TimeFrame(5, TimeFrameUnit.Minute))
+
+    bearish_candles = data[data['close'] < data['open']]
+
+    # Get the last two bearish candles
+    second_last_bearish = bearish_candles.iloc[-2]
+    last_bearish = bearish_candles.iloc[-1]
+
+    # Get the candle immediately after each bearish candle
+    second_last_bearish_next = data.loc[second_last_bearish.name:].iloc[1]
+
+    last_bearish_idx = data.index.get_loc(last_bearish.name)
+    # Ensure there's a next row before accessing it
+    if last_bearish_idx + 1 < len(data):
+        last_bearish_next = data.iloc[last_bearish_idx + 1]
+        second_low = min(last_bearish["low"], last_bearish_next["low"])
+    else:
+        second_low = None
+
+    # Find the lows
+    first_low = min(second_last_bearish["low"], second_last_bearish_next["low"])
+
+    # Determine trend direction
+    if second_low is None:
+        bullish_candles = data[data['close'] > data['open']]
+
+        # Get the last two bullish candles
+        second_last_bullish = bullish_candles.iloc[-2]
+        last_bullish = bullish_candles.iloc[-1]
+
+        # Get the candle immediately after each bullish candle
+        second_last_bullish_next = data.loc[second_last_bullish.name:].iloc[1]
+        last_bullish_idx = data.index.get_loc(last_bullish.name)
+
+        # Ensure there's a next row before accessing it
+        if last_bullish_idx + 1 < len(data):
+            last_bullish_next = data.iloc[last_bullish_idx + 1]
+            second_high = min(last_bullish["low"], last_bullish_next["low"])
+        else:
+            second_high = None
+
+        # Find the highs
+        first_high = min(second_last_bullish["low"], second_last_bullish_next["low"])
+
+        # Determine trend direction
+        if second_high is None:
+            return None
+        elif first_high <= second_high:
+            return "bullish"
+        elif first_high >= second_high:
+            return "bearish"
+
+    elif first_low <= second_low:
+        return "bullish"
+    elif first_low >= second_low:
+        return "bearish"
+
+def breakOfStructure(trend, data): # Mostly the same code as the previous function
+    if trend == "bullish":
+        bearish_candles = data[data['close'] < data['open']]
+
+        second_last_bearish = bearish_candles.iloc[-2]
+        last_bearish = bearish_candles.iloc[-1]
+
+        second_last_bearish_next = data.loc[second_last_bearish.name:].iloc[1]
+
+        last_bearish_idx = data.index.get_loc(last_bearish.name)
+
+        if last_bearish_idx + 1 < len(data):
+            last_bearish_next = data.iloc[last_bearish_idx + 1]
+            second_low = min(last_bearish["low"], last_bearish_next["low"])
+        else:
+            second_low = None
+
+        first_low = min(second_last_bearish["low"], second_last_bearish_next["low"])
+
+        if second_low is None:
+            return None
+        elif first_low <= second_low:
+            return False
+        elif first_low >= second_low:
+            return True
+
+    elif trend == "bearish":
+        bullish_candles = data[data['close'] > data['open']]
+
+        second_last_bullish = bullish_candles.iloc[-2]
+        last_bullish = bullish_candles.iloc[-1]
+
+        second_last_bullish_next = data.loc[second_last_bullish.name:].iloc[1]
+        last_bullish_idx = data.index.get_loc(last_bullish.name)
+
+        if last_bullish_idx + 1 < len(data):
+            last_bullish_next = data.iloc[last_bullish_idx + 1]
+            second_high = min(last_bullish["low"], last_bullish_next["low"])
+        else:
+            second_high = None
+
+        first_high = min(second_last_bullish["low"], second_last_bullish_next["low"])
+
+        if second_high is None:
+            return None
+        elif first_high <= second_high:
+            return True
+        elif first_high >= second_high:
+            return False
+    else:
+        return findTrend()
+
+
+def liquiditySweep(data=None):
+    if data is None:
+        data = get_candle_data(SYMBOL, timeframe=TimeFrame(5, TimeFrameUnit.Minute))
+
+    reference_data = data.iloc[:-1]  # Data for finding highs/lows
+    last_completed_candle = data.iloc[-1]
+
+    # Find significant levels from reference period
+    prior_high = reference_data['high'].max()
+    prior_low = reference_data['low'].min()
+
+    print(f"📈 Prior High: {prior_high}")
+    print(f"📉 Prior Low: {prior_low}")
+    print(f"🕯️ Last Closed Candle High: {last_completed_candle['high']}")
+    print(f"🕯️ Last Closed Candle Low: {last_completed_candle['low']}")
+
+    # Check for sweeps using the last completed candle
+    if last_completed_candle['high'] > prior_high:
+        return 1, last_completed_candle['high'], prior_high  # Swept the high
+    elif last_completed_candle['low'] < prior_low:
+        return 2, last_completed_candle['low'], prior_low  # Swept the low
+
+    return 0, None, None  # No sweep
+
+
+def initialize_fvg_list():
+    data = get_candle_data(SYMBOL, timeframe=TimeFrame(5, TimeFrameUnit.Minute))
+    potential_fvgs = []
+
+    for i in range(len(data) - 2):
+        candle1 = data.iloc[i]
+        candle2 = data.iloc[i + 1]
+        candle3 = data.iloc[i + 2]
+        candle_time = data.index[i + 1]
+
+        # Check for potential FVGs first
+        bullish_fvg = (candle1['high'] < candle3['low'])
+        bearish_fvg = (candle1['low'] > candle3['high'])
+
+        if bullish_fvg:
+            potential_fvgs.append({
+                'middle': (candle1['high'] + candle3['low']) / 2,
+                'type': 'bullish',
+                'gap_low': candle1['high'],
+                'gap_high': candle3['low'],
+                'time': candle_time,
+                'respected':False
+            })
+        elif bearish_fvg:
+            potential_fvgs.append({
+                'middle': (candle1['low'] + candle3['high']) / 2,
+                'type': 'bearish',
+                'gap_low': candle3['high'],
+                'gap_high': candle1['low'],
+                'time': candle_time,
+                'respected': False
+            })
+    validfvgs = []
+    for i in range(len(data)):
+        candle = data.iloc[i]
+        for fvg in potential_fvgs:
+            if (fvg['type'] == 'bullish')&(candle['low']<fvg['gap_low'])&(data.index[i] > fvg['time']):
+                continue
+            elif (fvg['type'] == 'bearish')&(candle['high']>fvg['gap_high'])&(data.index[i] > fvg['time']):
+                continue
+            elif (fvg['type'] == 'bullish')&(candle['low']<=fvg['middle'])&(data.index[i] > fvg['time']):
+                fvg['respected'] = True
+            elif (fvg['type'] == 'bearish')&(candle['high']>=fvg['middle'])&(data.index[i] > fvg['time']):
+                fvg['respected'] = True
+            elif (fvg['type'] == 'bullish')&(candle['high']>=fvg['gap_high'])&(fvg['respected'] == True)&(data.index[i] > fvg['time']):
+                continue
+            elif (fvg['type'] == 'bearish')&(candle['low']<=fvg['gap_low'])&(fvg['respected'] == True)&(data.index[i] > fvg['time']):
+                continue
+            else:
+                validfvgs.append(fvg)
+
+    seen = set()
+    finalfvgs = []
+    for fvg in validfvgs:
+        fvgdata = (fvg['time'])  # Unique key
+        if fvgdata not in seen:
+            seen.add(fvgdata)
+            finalfvgs.append(fvg)
+
+    return finalfvgs
+
+def update_fvg_list(data, potential_fvgs):
+    candle3 = data.iloc[-1]
+    candle1 = data.iloc[-3]
+    candle_time = pd.Timestamp(data.index[-2][1])
+
+    bullish_fvg = (candle1['high'] < candle3['low'])
+    bearish_fvg = (candle1['low'] > candle3['high'])
+
+    if bullish_fvg:
+        potential_fvgs.append({
+            'middle': (candle1['high'] + candle3['low']) / 2,
+            'type': 'bullish',
+            'gap_low': candle1['high'],
+            'gap_high': candle3['low'],
+            'time': candle_time,
+            'respected': False
+        })
+    elif bearish_fvg:
+        potential_fvgs.append({
+            'middle': (candle1['low'] + candle3['high']) / 2,
+            'type': 'bearish',
+            'gap_low': candle3['high'],
+            'gap_high': candle1['low'],
+            'time': candle_time,
+            'respected': False
+        })
+
+    candle = candle3
+    validfvgs = []
+    for fvg in potential_fvgs:
+        if (fvg['type'] == 'bullish') & (candle['low'] < fvg['gap_low']):
+            continue
+        elif (fvg['type'] == 'bearish') & (candle['high'] > fvg['gap_high']):
+            continue
+        elif (fvg['type'] == 'bullish') & (candle['low'] <= fvg['middle']):
+            fvg['respected'] = True
+        elif (fvg['type'] == 'bearish') & (candle['high'] >= fvg['middle']):
+            fvg['respected'] = True
+        elif (fvg['type'] == 'bullish') & (candle['high'] >= fvg['gap_high']) & (fvg['respected'] == True):
+            continue
+        elif (fvg['type'] == 'bearish') & (candle['low'] <= fvg['gap_low']) & (fvg['respected'] == True):
+            continue
+        else:
+            validfvgs.append(fvg)
+
+
+    seen = set()
+    finalfvgs = []
+    for fvg in validfvgs:
+        fvgdata = (fvg['time'])
+        if fvgdata not in seen:
+            seen.add(fvgdata)
+            finalfvgs.append(fvg)
+
+    return finalfvgs
+
+def main():
+    # Initialize variables, find recent fvgs, and find the trend
+    last_candle_time = None
+    trend = findTrend()
+    fvglist = initialize_fvg_list()
+    respect = 0
+    liq = 0
+    typefvg = ''
+    highsweep = False
+    lowsweep = False
+    trading = True
+
+    for fvg in fvglist:
+        print(str(fvg['time']) + " " + fvg['type'])
+
+    while trading:
+            # Get latest candle data
+            current_data = get_candle_data(SYMBOL, timeframe=TimeFrame(5, TimeFrameUnit.Minute))
+
+            current_time = current_data.index[-1]
+
+            # Check if this is a new completed candle
+            if current_time != last_candle_time:
+                print(f"\nAnalyzing candle stick {current_time}")
+                # Check for liquidity sweeps
+                sweep_result, sweep_price, level = liquiditySweep(current_data)
+
+                if sweep_result == 1:
+                    print(f"🔼 HIGH SWEEP: Price {sweep_price:.2f} broke above previous high {level:.2f}")
+                    liq = 4
+                    highsweep = True
+                    lowsweep = False
+                elif sweep_result == 2:
+                    print(f"🔽 LOW SWEEP: Price {sweep_price:.2f} broke below previous low {level:.2f}")
+                    liq = 4
+                    lowsweep = True
+                    highsweep = False
+                last_candle_time = current_time
+
+                bos = breakOfStructure(trend, current_data)
+                if bos is True:
+                    if trend == "bullish":
+                        print("⚠️BOS: Trend is now BEARISH")
+                        trend = "bearish"
+                    elif trend == "bearish":
+                        print("⚠️BOS: Trend is now BULLISH")
+                        trend = "bullish"
+                elif bos is None:
+                    print("Waiting for the next candle...")
+                    print(f"Trend is still {trend}")
+                else:
+                    print(f"Trend is {trend}")
+
+                lastfvg = fvglist[-1]
+                fvglist = update_fvg_list(current_data, fvglist)
+                if fvglist[-1] is not lastfvg:
+                    print(f"❗New {fvglist[-1]['type']} FVG Created")
+                for fvg in fvglist:
+                    if fvg['respected']:
+                        print(f"❗Currently in a {fvg['type']} FVG")
+                        typefvg = fvg['type']
+                        respect = 4
+
+                if (respect > 0)&(typefvg == 'bullish')&(bos == True)&(trend == 'bullish')&(liq > 0)& lowsweep:
+                    print("BUY ORDER FILLED")
+
+                elif (respect > 0)&(typefvg == 'bearish')&(bos == True)&(trend == 'bearish')&(liq > 0)& highsweep:
+                    print("SELL ORDER FILLED")
+
+            # Wait a few seconds to check for a new candle
+            time.sleep(5)
+            respect -= 1
+            liq -= 1
+
+
+if __name__ == "__main__":
+    main()
